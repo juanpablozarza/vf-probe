@@ -31,6 +31,16 @@ class Mutator:
 
 
 @dataclass(frozen=True)
+class Finding:
+    """A weighted reward that stayed up when the mutator expected a drop."""
+
+    mutator: str
+    component: str
+    base: float
+    mutant: float
+
+
+@dataclass(frozen=True)
 class Row:
     """One env x mutator result."""
 

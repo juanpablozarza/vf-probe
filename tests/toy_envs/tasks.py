@@ -6,6 +6,7 @@ Both claim to check the answer and the tool output. ``CleanTask`` does both.
 
 from __future__ import annotations
 
+import json
 from typing import ClassVar
 
 import verifiers.v1 as vf
@@ -84,8 +85,13 @@ def tool_tokens(trace: vf.Trace) -> set[str]:
     return tokens
 
 
-def tool_output(data: SponsorData) -> str:
+def lookup_sponsor(data: SponsorData) -> str:
+    """Tool result for one sponsor lookup. The probe does not call this."""
     return f"id {data.citation_id} sponsor {data.gold_answer}"
+
+
+def tool_output(data: SponsorData) -> str:
+    return lookup_sponsor(data)
 
 
 def swapped_tool_output(data: SponsorData) -> str:
@@ -105,15 +111,28 @@ def wrong_answer_reply(data: SponsorData) -> str:
 
 
 def toy_trace(task: SponsorTask, reply: str, observation: str) -> vf.Trace:
-    """One tool result, then one sampled reply. Enough for ``Task.score``."""
+    """A lookup call, its tool result, then the sampled reply."""
+    call_id = "lookup-1"
     return vf.Trace(
         task=vf.TraceTask(type=type(task).__name__, data=task.data),
         agent=vf.AgentInfo(config=vf.AgentConfig.model_validate({})),
         nodes=[
             vf.MessageNode(
+                message=vf.AssistantMessage(
+                    tool_calls=[
+                        vf.ToolCall(
+                            id=call_id,
+                            name="lookup_sponsor",
+                            arguments=json.dumps({"drug": task.data.id}),
+                        )
+                    ],
+                ),
+                sampled=True,
+            ),
+            vf.MessageNode(
                 message=vf.ToolMessage(
-                    tool_call_id="lookup-1",
-                    name="lookup",
+                    tool_call_id=call_id,
+                    name="lookup_sponsor",
                     content=observation,
                 )
             ),
