@@ -37,6 +37,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import verifiers.v1 as vf
+
 if TYPE_CHECKING:
     from verifiers.v1.runtimes import Runtime
     from verifiers.v1.task import Task
@@ -51,5 +53,50 @@ async def score(
     eps: float = 0.0,
     runtime: Runtime | None = None,
 ) -> Trace:
-    """Deep-copy `trace`, await Task.score, repeat `k` times."""
-    raise NotImplementedError
+    """Deep-copy `trace`, await ``Task.score(runtime=None)``, repeat `k` times.
+
+    ``runtime`` is accepted and passed through. Do not pass ``deployment``:
+    verifiers 0.4.0 has no such argument. When `k` is greater than 1, a
+    component score that moves by more than `eps` raises ``RuntimeError``.
+    """
+    if k < 1:
+        raise ValueError("k must be at least 1")
+    last: Trace | None = None
+    first: dict[str, float | None] | None = None
+    for _ in range(k):
+        copied = trace.model_copy(deep=True)
+        await task.score(copied, runtime=runtime)
+        seen = _component_scores(copied)
+        if first is None:
+            first = seen
+        elif _moved(first, seen, eps):
+            raise RuntimeError("score changed across repeats")
+        last = copied
+    if last is None:
+        raise RuntimeError("score did not run")
+    return last
+
+
+def _component_scores(trace: vf.Trace) -> dict[str, float | None]:
+    scores: dict[str, float | None] = {}
+    for name, reward in trace.rewards.items():
+        scores[name] = None if reward is None else reward.score
+    return scores
+
+
+def _moved(
+    first: dict[str, float | None],
+    seen: dict[str, float | None],
+    eps: float,
+) -> bool:
+    if first.keys() != seen.keys():
+        return True
+    for name, before in first.items():
+        after = seen[name]
+        if before is None or after is None:
+            if before is not after:
+                return True
+            continue
+        if abs(before - after) > eps:
+            return True
+    return False
