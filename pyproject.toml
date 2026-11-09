@@ -33,13 +33,15 @@ line-length = 88
 select = ["E", "F", "I", "UP"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["vf_probe"]
+known-first-party = ["toy_envs", "vf_probe"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["tests"]
 
 [tool.pyright]
 include = ["src", "tests"]
+extraPaths = ["tests"]
 pythonVersion = "3.11"
 typeCheckingMode = "basic"
 venvPath = "."
