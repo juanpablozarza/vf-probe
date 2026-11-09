@@ -41,6 +41,30 @@ class Finding:
 
 
 @dataclass(frozen=True)
+class ComponentSkip:
+    """One reward the probe refused to score."""
+
+    component: str
+    reason: SkipReason
+    message: str
+
+
+@dataclass(frozen=True)
+class ProbeResult:
+    """Findings, plus a skip when the environment cannot be probed from text.
+
+    `clean` is true only when the gold score was above 0 and every reward the
+    probe tested fell. An empty `findings` tuple is not itself a clean bill.
+    """
+
+    findings: tuple[Finding, ...]
+    reason: SkipReason | None
+    message: str | None
+    clean: bool
+    skips: tuple[ComponentSkip, ...] = ()
+
+
+@dataclass(frozen=True)
 class Row:
     """One env x mutator result."""
 

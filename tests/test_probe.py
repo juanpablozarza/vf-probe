@@ -10,6 +10,7 @@ from toy_envs.tasks import (
     EXAMPLE,
     BlindGroundingTask,
     CleanTask,
+    SponsorData,
     SponsorTask,
     good_reply,
     lookup_sponsor,
@@ -23,7 +24,8 @@ from vf_probe.mutators import (
     swap_observation,
 )
 from vf_probe.probe import probe
-from vf_probe.types import Finding
+from vf_probe.support import NEEDS_JUDGE, NEEDS_SANDBOX, NOT_TEXT_SCORABLE
+from vf_probe.types import ProbeResult
 
 
 def test_locate_answer_reads_a_nested_gold_value() -> None:
@@ -78,17 +80,22 @@ def test_mutations_keep_the_evidence_they_do_not_target() -> None:
 
 def test_probe_flags_only_the_blind_grounding_reward() -> None:
     clean, blind, answer_only = asyncio.run(_probe_all())
-    assert clean == []
-    assert len(blind) == 1
-    finding = blind[0]
+    assert clean.clean is True
+    assert clean.reason is None
+    assert clean.findings == ()
+    assert len(blind.findings) == 1
+    finding = blind.findings[0]
+    assert blind.clean is False
+    assert blind.reason is None
     assert finding.mutator == "swap_observation"
     assert finding.component == "grounded"
     assert finding.base == 1.0
     assert finding.mutant == 1.0
-    assert answer_only == []
+    assert answer_only.clean is True
+    assert answer_only.findings == ()
 
 
-async def _probe_all() -> tuple[list[Finding], list[Finding], list[Finding]]:
+async def _probe_all() -> tuple[ProbeResult, ProbeResult, ProbeResult]:
     observation = lookup_sponsor(EXAMPLE)
     reply = good_reply(EXAMPLE)
     clean = CleanTask(EXAMPLE)
@@ -106,6 +113,119 @@ class AnswerOnly(SponsorTask):
 
     claims_tool_use = False
     claims_grounding = False
+
+
+def test_unsupported_environments_return_a_reason() -> None:
+    sandbox, judged, contained, zero, missing, mixed = asyncio.run(_unsupported())
+    assert sandbox.clean is False
+    assert sandbox.reason == "needs_sandbox"
+    assert sandbox.message == NEEDS_SANDBOX
+    assert sandbox.skips[0].component == "tests"
+    assert SandboxOnly.calls == 0
+
+    assert judged.clean is False
+    assert judged.reason == "needs_judge"
+    assert judged.message == NEEDS_JUDGE
+    assert Judged.calls == 0
+
+    assert contained.reason == "needs_sandbox"
+    assert contained.message == NEEDS_SANDBOX
+    assert ContainerTask.calls == 0
+
+    assert zero.reason == "not_text_scorable"
+    assert zero.message == NOT_TEXT_SCORABLE
+    assert zero.clean is False
+    assert missing.reason == "not_text_scorable"
+    assert missing.message == NOT_TEXT_SCORABLE
+
+    assert mixed.clean is True
+    assert mixed.reason is None
+    assert mixed.findings == ()
+    assert mixed.skips[0].component == "tests"
+    assert mixed.skips[0].reason == "needs_sandbox"
+
+
+async def _unsupported() -> tuple[
+    ProbeResult,
+    ProbeResult,
+    ProbeResult,
+    ProbeResult,
+    ProbeResult,
+    ProbeResult,
+]:
+    SandboxOnly.calls = 0
+    Judged.calls = 0
+    ContainerTask.calls = 0
+    reply = good_reply(EXAMPLE)
+    observation = lookup_sponsor(EXAMPLE)
+    trace = toy_trace(CleanTask(EXAMPLE), reply, observation)
+    judged = Judged(
+        EXAMPLE,
+        vf.TaskConfig.model_validate(
+            {"judges": [{"id": "decision", "name": "grader"}]}
+        ),
+    )
+    zero = ZeroGrade(EXAMPLE)
+    text = TextAndSandbox(EXAMPLE)
+    return (
+        await probe(SandboxOnly(EXAMPLE), trace),
+        await probe(judged, trace),
+        await probe(ContainerTask(EXAMPLE), trace),
+        await probe(zero, toy_trace(zero, reply, observation)),
+        await probe(NoReward(EXAMPLE), trace),
+        await probe(text, toy_trace(text, reply, observation)),
+    )
+
+
+class SandboxOnly(vf.Task[SponsorData, vf.State, vf.TaskConfig]):
+    calls = 0
+
+    async def score(self, trace: vf.Trace, runtime: vf.Runtime | None = None) -> None:
+        type(self).calls += 1
+        await super().score(trace, runtime=runtime)
+
+    @vf.reward(weight=1.0)
+    async def tests(self, trace: vf.Trace, runtime: object) -> float:
+        return 1.0
+
+
+class ContainerTask(CleanTask):
+    NEEDS_CONTAINER = True
+    calls = 0
+
+    async def score(self, trace: vf.Trace, runtime: vf.Runtime | None = None) -> None:
+        type(self).calls += 1
+        await super().score(trace, runtime=runtime)
+
+
+class Judged(CleanTask):
+    calls = 0
+
+    async def score(self, trace: vf.Trace, runtime: vf.Runtime | None = None) -> None:
+        type(self).calls += 1
+        await super().score(trace, runtime=runtime)
+
+
+class ZeroGrade(SponsorTask):
+    claims_tool_use = False
+    claims_grounding = False
+
+    @vf.reward(weight=1.0)
+    async def answer(self, trace: vf.Trace) -> float:
+        return 0.0
+
+
+class NoReward(vf.Task[SponsorData, vf.State, vf.TaskConfig]):
+    """Scores nothing. There is no text signal to test."""
+
+
+class TextAndSandbox(SponsorTask):
+    claims_tool_use = False
+    claims_grounding = False
+
+    @vf.reward(weight=1.0)
+    async def tests(self, trace: vf.Trace, runtime: object) -> float:
+        return 1.0
 
 
 def _tool_text(trace: vf.Trace) -> str:
