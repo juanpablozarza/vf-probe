@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verifiers-0-4-1:
+    name: ruff, pyright, pytest (verifiers 0.4.1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: uv sync --frozen --all-groups
+      - name: Ruff
+        run: uv run ruff check
+      - name: Pyright
+        run: uv run pyright
+      - name: Pytest
+        run: uv run pytest
+
+  verifiers-0-4-0:
+    # Later this job asserts identical verdicts on the FDA-Gym control.
+    name: pytest (verifiers 0.4.0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install pin, then verifiers 0.4.0
+        run: |
+          uv sync --frozen --all-groups
+          uv pip install --python .venv verifiers==0.4.0
+      - name: Pytest
+        run: uv run --no-sync pytest

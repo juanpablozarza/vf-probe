@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+downloads/
+eggs/
+.eggs/
+*.egg-info/
+*.egg
+.installed.cfg
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# uv / tooling
+.python-version
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Generated probe output (keep the folders)
+fixtures/*
+!fixtures/.gitkeep
+reports/*
+!reports/.gitkeep
+
+# OS
+.DS_Store
