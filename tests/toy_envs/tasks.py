@@ -12,6 +12,8 @@ from typing import ClassVar
 import verifiers.v1 as vf
 from verifiers.v1.types import content_text
 
+from vf_probe.mutators import declares_evidence
+
 WRONG_ANSWER = "Pfizer"
 WRONG_CITATION = "NDA99999"
 
@@ -36,6 +38,7 @@ class SponsorTask(vf.Task[SponsorData, vf.State, vf.TaskConfig]):
     claims_tool_use: ClassVar[bool] = True
     claims_grounding: ClassVar[bool] = True
 
+    @declares_evidence("answer")
     @vf.reward(weight=1.0)
     async def answer(self, trace: vf.Trace) -> float:
         got, _citation = reply_fields(trace.last_reply)
@@ -49,6 +52,7 @@ class SponsorTask(vf.Task[SponsorData, vf.State, vf.TaskConfig]):
 class CleanTask(SponsorTask):
     """Answer matches the gold. Grounding requires the cited id in a tool output."""
 
+    @declares_evidence("observation")
     @vf.reward(weight=1.0)
     async def grounded(self, trace: vf.Trace) -> float:
         _answer, citation = reply_fields(trace.last_reply)
@@ -60,6 +64,7 @@ class CleanTask(SponsorTask):
 class BlindGroundingTask(SponsorTask):
     """Answer matches the gold. Grounding ignores tool outputs."""
 
+    @declares_evidence("observation")
     @vf.reward(weight=1.0)
     async def grounded(self, trace: vf.Trace) -> float:
         return float(bool(trace.last_reply))

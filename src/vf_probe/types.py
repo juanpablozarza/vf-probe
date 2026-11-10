@@ -41,6 +41,19 @@ class Finding:
 
 
 @dataclass(frozen=True)
+class Unattributed:
+    """Before and after scores for a reward whose evidence we could not place.
+
+    A hold here is not a finding. Several opaque rewards are reported, not guessed.
+    """
+
+    mutator: str
+    component: str
+    base: float
+    mutant: float
+
+
+@dataclass(frozen=True)
 class ComponentSkip:
     """One reward the probe refused to score."""
 
@@ -62,6 +75,7 @@ class ProbeResult:
     message: str | None
     clean: bool
     skips: tuple[ComponentSkip, ...] = ()
+    unattributed: tuple[Unattributed, ...] = ()
 
 
 @dataclass(frozen=True)
