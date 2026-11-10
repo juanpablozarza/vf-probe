@@ -41,6 +41,44 @@ class Finding:
 
 
 @dataclass(frozen=True)
+class Unattributed:
+    """Before and after scores for a reward whose evidence we could not place.
+
+    A hold here is not a finding. Several opaque rewards are reported, not guessed.
+    """
+
+    mutator: str
+    component: str
+    base: float
+    mutant: float
+
+
+@dataclass(frozen=True)
+class ComponentSkip:
+    """One reward the probe refused to score."""
+
+    component: str
+    reason: SkipReason
+    message: str
+
+
+@dataclass(frozen=True)
+class ProbeResult:
+    """Findings, plus a skip when the environment cannot be probed from text.
+
+    `clean` is true only when the gold score was above 0 and every reward the
+    probe tested fell. An empty `findings` tuple is not itself a clean bill.
+    """
+
+    findings: tuple[Finding, ...]
+    reason: SkipReason | None
+    message: str | None
+    clean: bool
+    skips: tuple[ComponentSkip, ...] = ()
+    unattributed: tuple[Unattributed, ...] = ()
+
+
+@dataclass(frozen=True)
 class Row:
     """One env x mutator result."""
 
