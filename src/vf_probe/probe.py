@@ -10,9 +10,11 @@ A gold score of 0 is not a clean bill.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import verifiers.v1 as vf
 
-from vf_probe.mutators import apply_mutator, select_mutators
+from vf_probe.mutators import answer_edit_traces, apply_mutator, select_mutators
 from vf_probe.scorer import score
 from vf_probe.support import (
     NEEDS_JUDGE,
@@ -38,6 +40,7 @@ async def probe(
     trace: vf.Trace,
     *,
     eps: float = 0.0,
+    other_golds: Sequence[str] = (),
 ) -> ProbeResult:
     """Probe one trace. `result.clean` is the clean bill, not an empty list."""
     if has_judge(task):
@@ -61,33 +64,33 @@ async def probe(
         base_score = _weighted_score(base, spec.target_component)
         if base_score is None or base_score <= 0:
             continue
-        mutated = apply_mutator(spec, trace, task)
-        if mutated is None:
-            continue
-        mutant = await score(task, mutated, runtime=None)
-        mutant_score = _weighted_score(mutant, spec.target_component)
-        if mutant_score is None:
-            continue
-        if not plan.attributed:
-            unattributed.append(
-                Unattributed(
-                    mutator=spec.name,
-                    component=spec.target_component,
-                    base=base_score,
-                    mutant=mutant_score,
+        for edit_name, mutated in _edits(spec, trace, task, other_golds):
+            if mutated is None:
+                continue
+            mutant = await score(task, mutated, runtime=None)
+            mutant_score = _weighted_score(mutant, spec.target_component)
+            if mutant_score is None:
+                continue
+            if not plan.attributed:
+                unattributed.append(
+                    Unattributed(
+                        mutator=edit_name,
+                        component=spec.target_component,
+                        base=base_score,
+                        mutant=mutant_score,
+                    )
                 )
-            )
-            continue
-        checked += 1
-        if _failed(spec, base_score, mutant_score, eps):
-            findings.append(
-                Finding(
-                    mutator=spec.name,
-                    component=spec.target_component,
-                    base=base_score,
-                    mutant=mutant_score,
+                continue
+            checked += 1
+            if _failed(spec, base_score, mutant_score, eps):
+                findings.append(
+                    Finding(
+                        mutator=edit_name,
+                        component=spec.target_component,
+                        base=base_score,
+                        mutant=mutant_score,
+                    )
                 )
-            )
     skips = _sandbox_skips(sorted(blocked))
     noted = tuple(unattributed)
     if checked == 0 and not noted:
@@ -100,6 +103,20 @@ async def probe(
         skips=skips,
         unattributed=noted,
     )
+
+
+def _edits(
+    spec: Mutator,
+    trace: vf.Trace,
+    task: vf.Task,
+    other_golds: Sequence[str],
+) -> list[tuple[str, vf.Trace]]:
+    if spec.name == "swap_answer":
+        return answer_edit_traces(trace, task, other_golds)
+    mutated = apply_mutator(spec, trace, task)
+    if mutated is None:
+        return []
+    return [(spec.name, mutated)]
 
 
 def _unsupported(
