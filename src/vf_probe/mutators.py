@@ -19,6 +19,7 @@ from typing import Any
 
 import verifiers.v1 as vf
 
+from vf_probe.answer_edits import answer_replacements, gold_kind
 from vf_probe.loader import locate_answer
 from vf_probe.support import reward_hooks
 from vf_probe.types import Mutator
@@ -70,7 +71,6 @@ _SKIP_CALLS = frozenset(
 )
 
 OBSERVATION_REDACTION = "PROBE_OBSERVATION"
-ANSWER_REDACTION = "PROBE_ANSWER"
 
 
 @dataclass(frozen=True)
@@ -195,15 +195,93 @@ def _method(fn: Any, name: str) -> Any:
     return owner.__dict__.get(name)
 
 
-def swap_answer(trace: vf.Trace, task: object) -> vf.Trace | None:
-    """Replace the located answer span in the final reply. Tool results stay."""
+def swap_answer(
+    trace: vf.Trace,
+    task: object,
+    other_golds: Sequence[str] = (),
+) -> vf.Trace | None:
+    """Apply the answer edit that matches the span. Tool results stay."""
+    edits = _answer_edits(trace, task, other_golds)
+    if not edits:
+        return None
+    _name, replacement, old = edits[0]
+    return _replace_answer(trace, old, replacement)
+
+
+def answer_edit_traces(
+    trace: vf.Trace,
+    task: object,
+    other_golds: Sequence[str] = (),
+) -> list[tuple[str, vf.Trace]]:
+    """Every applicable answer edit, each on its own copy of `trace`."""
+    edited: list[tuple[str, vf.Trace]] = []
+    for name, replacement, old in _answer_edits(trace, task, other_golds):
+        mutated = _replace_answer(trace, old, replacement)
+        if mutated is not None:
+            edited.append((name, mutated))
+    return edited
+
+
+def _answer_edits(
+    trace: vf.Trace,
+    task: object,
+    other_golds: Sequence[str],
+) -> list[tuple[str, str, str]]:
+    old = _graded_answer(trace, task)
+    if not old.strip():
+        return []
+    return [
+        (name, replacement, old)
+        for name, replacement in answer_replacements(
+            old,
+            gold_kind=gold_kind(task),
+            other_golds=other_golds,
+        )
+    ]
+
+
+def _graded_answer(trace: vf.Trace, task: object) -> str:
+    final = _final_answer(trace)
+    if isinstance(final, dict):
+        answer = final.get("answer")
+        if isinstance(answer, str) and answer.strip():
+            return answer
     span, _method = locate_answer(trace, task)
-    if not span.strip():
-        return None
+    return span
+
+
+def _final_answer(trace: vf.Trace) -> object:
+    return getattr(getattr(trace, "state", None), "final_answer", None)
+
+
+def _replace_answer(trace: vf.Trace, old: str, new: str) -> vf.Trace | None:
     cloned = trace.model_copy(deep=True)
-    if not _replace_last_reply(cloned, span, _redaction(span, ANSWER_REDACTION)):
-        return None
-    return cloned
+    changed = _replace_last_reply(cloned, old, new)
+    changed = _replace_final_answer(cloned, old, new) or changed
+    return cloned if changed else None
+
+
+def _replace_final_answer(trace: vf.Trace, old: str, new: str) -> bool:
+    state = getattr(trace, "state", None)
+    if state is None:
+        return False
+    final = getattr(state, "final_answer", None)
+    if not isinstance(final, dict):
+        return False
+    answer = final.get("answer")
+    if isinstance(answer, str) and old in answer:
+        updated = dict(final)
+        updated["answer"] = answer.replace(old, new)
+    elif isinstance(answer, bool):
+        updated = dict(final)
+        updated["answer"] = not answer
+    else:
+        return False
+    if hasattr(state, "model_copy"):
+        trace.state = state.model_copy(update={"final_answer": updated})
+    else:
+        setattr(state, "final_answer", updated)
+    return True
 
 
 def swap_observation(trace: vf.Trace, _task: object) -> vf.Trace | None:
@@ -224,13 +302,6 @@ def apply_mutator(spec: Mutator, trace: vf.Trace, task: object) -> vf.Trace | No
     if spec.name == "swap_observation":
         return swap_observation(trace, task)
     return None
-
-
-def _redaction(span: str, token: str) -> str:
-    redaction = token
-    while span in redaction:
-        redaction += "_X"
-    return redaction
 
 
 def _replace_last_reply(trace: vf.Trace, span: str, redaction: str) -> bool:

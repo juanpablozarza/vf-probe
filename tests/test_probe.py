@@ -314,9 +314,9 @@ def test_opaque_rewards_keep_their_scores_and_are_not_findings() -> None:
     assert result.clean is False
     assert result.reason is None
     assert {(note.mutator, note.component) for note in result.unattributed} == {
-        ("swap_answer", "alpha"),
+        ("entity_swap", "alpha"),
         ("swap_observation", "alpha"),
-        ("swap_answer", "beta"),
+        ("entity_swap", "beta"),
         ("swap_observation", "beta"),
     }
 
