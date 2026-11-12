@@ -46,11 +46,10 @@ def test_rename_and_delete_move_fda_citation() -> None:
             changed = perturb_argument(trace)
             assert renamed is not None and removed is not None and changed is not None
             for edited in (renamed, removed, changed):
-                scored = grade_steps(
-                    task,
-                    list(edited.state.steps),
-                    edited.state.final_answer,
-                )
+                steps = getattr(edited.state, "steps", None)
+                final_answer = getattr(edited.state, "final_answer", None)
+                assert isinstance(steps, list)
+                scored = grade_steps(task, steps, final_answer)
                 assert scored["citation"] < 1.0 or scored["correctness"] < 1.0
             checked += 1
             if checked == 5:
