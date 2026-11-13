@@ -12,6 +12,7 @@ reward gets both edits. Several opaque rewards are reported and not flagged.
 from __future__ import annotations
 
 import inspect
+import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -38,6 +39,7 @@ _ANSWER_READS = (
     "['answer']",
 )
 _OBSERVATION_READS = ("tool_messages", ".steps")
+_TOOL_CALL_READS = ("tool_calls",)
 _SKIP_CALLS = frozenset(
     {
         "abs",
@@ -109,6 +111,10 @@ def select_mutators(task: object, reward_names: Sequence[str]) -> list[PlannedEd
         for kind, mutator_name in (
             ("answer", "swap_answer"),
             ("observation", "swap_observation"),
+            ("tool_call", "rename_tool"),
+            ("tool_call", "perturb_argument"),
+            ("tool_call", "swap_arguments"),
+            ("tool_call", "delete_tool_call"),
         ):
             if kind not in kinds:
                 continue
@@ -165,6 +171,8 @@ def evidence_from_source(fn: Any) -> frozenset[str]:
         found.add("answer")
     if any(marker in text for marker in _OBSERVATION_READS):
         found.add("observation")
+    if any(marker in text for marker in _TOOL_CALL_READS):
+        found.add("tool_call")
     return frozenset(found)
 
 
@@ -301,7 +309,256 @@ def apply_mutator(spec: Mutator, trace: vf.Trace, task: object) -> vf.Trace | No
         return swap_answer(trace, task)
     if spec.name == "swap_observation":
         return swap_observation(trace, task)
+    if spec.name == "rename_tool":
+        return rename_tool(trace)
+    if spec.name == "perturb_argument":
+        return perturb_argument(trace)
+    if spec.name == "swap_arguments":
+        return swap_arguments(trace)
+    if spec.name == "delete_tool_call":
+        return delete_tool_call(trace)
     return None
+
+
+def rename_tool(trace: vf.Trace) -> vf.Trace | None:
+    """Point one tool call at a different name. Arguments stay."""
+    sites = _call_sites(trace)
+    if not sites:
+        return None
+    site = _cited_site(trace, sites) or sites[0]
+    cloned = trace.model_copy(deep=True)
+    call = _call_by_id(cloned, site.call_id)
+    if call is None:
+        return None
+    call.name = _other_name(site.name, sites)
+    _rename_step(cloned, site.name, site.arguments, call.name)
+    return cloned
+
+
+def perturb_argument(trace: vf.Trace) -> vf.Trace | None:
+    """Change one argument value. The function name and the tool result stay."""
+    sites = _call_sites(trace)
+    preferred = _cited_site(trace, sites)
+    ordered = [preferred, *sites] if preferred is not None else sites
+    for site in ordered:
+        if site is None:
+            continue
+        key = _perturbable_key(site.arguments)
+        if key is None:
+            continue
+        cloned = trace.model_copy(deep=True)
+        call = _call_by_id(cloned, site.call_id)
+        if call is None:
+            return None
+        arguments = json.loads(call.arguments or "{}")
+        arguments[key] = _perturb_value(arguments[key])
+        call.arguments = json.dumps(arguments)
+        _rewrite_step_arguments(cloned, site.name, site.arguments, arguments)
+        return cloned
+    return None
+
+
+def swap_arguments(trace: vf.Trace) -> vf.Trace | None:
+    """Trade the first two argument values when they differ."""
+    sites = _call_sites(trace)
+    preferred = _cited_site(trace, sites)
+    ordered = [preferred, *sites] if preferred is not None else sites
+    for site in ordered:
+        if site is None:
+            continue
+        keys = list(site.arguments)
+        if len(keys) < 2 or site.arguments[keys[0]] == site.arguments[keys[1]]:
+            continue
+        cloned = trace.model_copy(deep=True)
+        call = _call_by_id(cloned, site.call_id)
+        if call is None:
+            return None
+        arguments = json.loads(call.arguments or "{}")
+        left, right = keys[0], keys[1]
+        arguments[left], arguments[right] = arguments[right], arguments[left]
+        call.arguments = json.dumps(arguments)
+        _rewrite_step_arguments(cloned, site.name, site.arguments, arguments)
+        return cloned
+    return None
+
+
+def delete_tool_call(trace: vf.Trace) -> vf.Trace | None:
+    """Remove one tool call, its result, and the matching step."""
+    sites = _call_sites(trace)
+    if not sites:
+        return None
+    site = _cited_site(trace, sites) or sites[0]
+    cloned = trace.model_copy(deep=True)
+    for node in cloned.nodes:
+        message = node.message
+        if isinstance(message, vf.AssistantMessage) and message.tool_calls:
+            kept = [call for call in message.tool_calls if call.id != site.call_id]
+            message.tool_calls = kept or None
+    cloned.nodes = [
+        node
+        for node in cloned.nodes
+        if not (
+            isinstance(node.message, vf.ToolMessage)
+            and node.message.tool_call_id == site.call_id
+        )
+    ]
+    _drop_step(cloned, site.name, site.arguments)
+    return cloned
+
+
+@dataclass(frozen=True)
+class _CallSite:
+    call_id: str
+    name: str
+    arguments: dict[str, Any]
+
+
+def _call_sites(trace: vf.Trace) -> list[_CallSite]:
+    sites: list[_CallSite] = []
+    for node in trace.nodes:
+        message = node.message
+        if not isinstance(message, vf.AssistantMessage):
+            continue
+        for call in message.tool_calls or []:
+            sites.append(
+                _CallSite(call.id, call.name, _load_arguments(call.arguments))
+            )
+    return sites
+
+
+def _load_arguments(raw: str | None) -> dict[str, Any]:
+    try:
+        loaded = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _call_by_id(trace: vf.Trace, call_id: str) -> vf.ToolCall | None:
+    for node in trace.nodes:
+        message = node.message
+        if not isinstance(message, vf.AssistantMessage):
+            continue
+        for call in message.tool_calls or []:
+            if call.id == call_id:
+                return call
+    return None
+
+
+def _other_name(name: str, sites: list[_CallSite]) -> str:
+    used = {site.name for site in sites}
+    candidate = f"{name}_other"
+    while candidate in used:
+        candidate += "_x"
+    return candidate
+
+
+def _perturbable_key(arguments: dict[str, Any]) -> str | None:
+    for key, value in arguments.items():
+        if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+            return key
+    return None
+
+
+def _perturb_value(value: object) -> object:
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, (int, float)):
+        return value + max(1, abs(value))
+    if isinstance(value, str):
+        flipped = value[::-1]
+        if flipped != value and value not in flipped:
+            return flipped
+        if value not in "other":
+            return "other"
+        return "other2"
+    return value
+
+
+def _steps(trace: vf.Trace) -> list[Any] | None:
+    state = getattr(trace, "state", None)
+    steps = getattr(state, "steps", None)
+    return steps if isinstance(steps, list) else None
+
+
+def _matching_step(
+    trace: vf.Trace, name: str, arguments: dict[str, Any]
+) -> dict[str, Any] | None:
+    steps = _steps(trace)
+    if steps is None:
+        return None
+    for step in steps:
+        if (
+            isinstance(step, dict)
+            and step.get("tool") == name
+            and step.get("arguments") == arguments
+        ):
+            return step
+    return None
+
+
+def _rename_step(
+    trace: vf.Trace, name: str, arguments: dict[str, Any], new_name: str
+) -> None:
+    step = _matching_step(trace, name, arguments)
+    if step is not None:
+        step["tool"] = new_name
+
+
+def _rewrite_step_arguments(
+    trace: vf.Trace,
+    name: str,
+    old: dict[str, Any],
+    new: dict[str, Any],
+) -> None:
+    step = _matching_step(trace, name, old)
+    if step is not None:
+        step["arguments"] = dict(new)
+
+
+def _drop_step(trace: vf.Trace, name: str, arguments: dict[str, Any]) -> None:
+    steps = _steps(trace)
+    if steps is None:
+        return
+    for index, step in enumerate(steps):
+        if (
+            isinstance(step, dict)
+            and step.get("tool") == name
+            and step.get("arguments") == arguments
+        ):
+            del steps[index]
+            return
+
+
+def _cited_site(trace: vf.Trace, sites: list[_CallSite]) -> _CallSite | None:
+    ids = _citation_ids(trace)
+    if not ids:
+        return None
+    for site in sites:
+        for node in trace.nodes:
+            message = node.message
+            if not isinstance(message, vf.ToolMessage):
+                continue
+            if message.tool_call_id != site.call_id:
+                continue
+            text = message.content if isinstance(message.content, str) else ""
+            if any(cid in text for cid in ids):
+                return site
+    return None
+
+
+def _citation_ids(trace: vf.Trace) -> list[str]:
+    final = getattr(getattr(trace, "state", None), "final_answer", None)
+    if not isinstance(final, dict):
+        return []
+    citations = final.get("citations")
+    if not isinstance(citations, list):
+        return []
+    ids: list[str] = []
+    for citation in citations:
+        if isinstance(citation, dict) and isinstance(citation.get("id"), str):
+            ids.append(citation["id"])
+    return ids
 
 
 def _replace_last_reply(trace: vf.Trace, span: str, redaction: str) -> bool:
